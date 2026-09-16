@@ -9,10 +9,7 @@
     "build": "vite build",
     "serve": "node server.js",
     "train": "node scripts/train-model.js",
-    "ingest": "node scripts/ingest-environment.js",
-    "validate:atlas": "node scripts/validate-atlas-index.js",
-    "validate:research": "node scripts/validate-research-readiness.js",
-    "validate:connectors": "node scripts/validate-connector-audit.js"
+    "ingest": "node scripts/ingest-environment.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

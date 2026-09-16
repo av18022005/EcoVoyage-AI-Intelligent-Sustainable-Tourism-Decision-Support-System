@@ -1,456 +1,108 @@
-# EcoVoyage-AI-Intelligent-Sustainable-Tourism-Decision-Support-System
+# EcoVoyage AI
 
-## 📌 Problem Statement
+EcoVoyage AI is a full-stack sustainable-tourism decision-support prototype for the CSE3086 NoSQL project. It implements the Review 1 design with a React interface, Express API, MongoDB data model, role-based access, geospatial queries, time-series environmental data, crowd prediction, carrying-capacity assessment, and a hybrid recommender.
 
-Tourism is one of the largest contributors to economic growth, but the rapid increase in tourist activities has led to several challenges such as overtourism, environmental degradation, traffic congestion, air pollution, damage to heritage sites, and inefficient resource management. Existing tourism platforms primarily recommend destinations based on popularity, ratings, or user-selected preferences through questionnaires. These systems often ignore real-time environmental conditions, sustainability factors, and the changing interests of users. Moreover, requiring users to complete preference surveys creates a poor user experience and often results in inaccurate recommendations.
+## Run the application
 
-Government tourism authorities also lack an integrated platform that combines real-time environmental data, historical tourism statistics, and tourist behavior to support data-driven policy decisions.
+1. In WSL, start MongoDB:
 
-To address these limitations, this project proposes **EcoVoyage AI**, a NoSQL-based Sustainable Tourism Intelligence and Decision Support System that automatically learns tourist interests from historical travel behavior using **Dynamic Tourist Interest Profiling (DTIP)**, integrates real-time environmental and tourism data, computes an adaptive **Dynamic Tourism Sustainability Index (DTSI++)**, predicts crowd levels and carrying capacity, and recommends sustainable destinations while providing analytical dashboards for tourists and government authorities.
+   ```bash
+   sudo service mongod start
+   ```
 
----
+2. In this folder, build the React client after any client-side edit:
 
-## 🎯 Objectives
+   ```powershell
+   .\node_modules\.bin\vite.cmd build
+   ```
 
-### Primary Objective
+3. Start the Express server:
 
-To develop a NoSQL-based intelligent tourism recommendation and decision support system that provides personalized and sustainable travel recommendations by integrating historical tourist behavior with real-time environmental and tourism data.
+   ```powershell
+   & "C:\Users\hp\.cache\codex-runtimes\codex-primary-runtime\dependencies\node\bin\node.exe" server.js
+   ```
 
-### Specific Objectives
+4. Open `http://localhost:3000`.
 
-- Develop a **Dynamic Tourist Interest Profiling (DTIP)** model that infers user preferences from historical travel behavior instead of using questionnaires.
-- Integrate real-time data from multiple sources, including weather, air quality, geospatial, tourism, and festival datasets.
-- Design a flexible **MongoDB NoSQL database** using document collections, time-series collections, and geospatial indexing to efficiently manage heterogeneous tourism data.
-- Develop an adaptive **Dynamic Tourism Sustainability Index (DTSI++)** to evaluate destination sustainability based on environmental and tourism factors.
-- Predict tourist crowd density and destination carrying capacity using machine learning techniques.
-- Develop a **hybrid recommendation engine** that combines user interests, sustainability scores, environmental conditions, and destination similarity to generate personalized recommendations.
-- Provide interactive dashboards for tourists, government agencies, and administrators to support sustainable tourism planning and management.
-- Evaluate the performance of the recommendation system using standard machine learning and recommendation metrics.
+## Demo accounts
 
----
+| Role | Email | Password |
+|---|---|---|
+| Tourist | `tourist@ecovoyage.ai` | `Tourist@123` |
+| Government | `government@ecovoyage.ai` | `Gov@123` |
+| Administrator | `admin@ecovoyage.ai` | `Admin@123` |
 
+Passwords are bcrypt-hashed before storage. JWTs expire after eight hours.
 
-## 🌐 External APIs & Datasets
+## Implemented requirements
 
+| Review 1 component | Implementation |
+|---|---|
+| Tourist / Government / Admin dashboards | Role-based React views secured by JWT middleware |
+| MongoDB NoSQL architecture | `users`, `destinations`, `visits`, `environmentReadings`, `festivals`, `modelRuns`, `capacityAssessments` collections |
+| Document / GeoJSON data | Destination documents store GeoJSON points; `location_2dsphere` supports `$near` queries |
+| Time-series environmental data | Native MongoDB time-series `environmentReadings` collection with a 30-day expiry policy |
+| DTIP | Tourist actions update interest weights and append immutable visitor events |
+| DTSI++ | AQI, weather, crowd, carbon and heritage weighted sustainability score |
+| Crowd prediction | Random Forest Regressor with 60 bootstrapped trees, persisted evaluation evidence |
+| Carrying capacity | Safe capacity recalculated from weather, air-quality and heritage-protection penalties |
+| Hybrid recommender | DTIP, DTSI++, budget, weather, predicted crowd and capacity combined into a ranking |
+| MongoDB aggregation | `$lookup` retrieves the most recent environmental reading for every destination |
+| Maps / eco context | React Leaflet map using OpenStreetMap tiles and MongoDB GeoJSON locations |
+| Performance evidence | RMSE, MAE, R², Precision@3, Recall@3 and NDCG@3 shown to Government/Admin roles |
+| Mobile support | Responsive UI plus installable web-app manifest/service worker |
 
-| **Data Source**                           | **Description**                                                                                                                               | **Purpose in Project**                                                                                                                                   |
-| ----------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **OpenWeather API**                       | Provides real-time weather information such as temperature, humidity, rainfall, wind speed, and weather conditions.                           | Used to calculate the **Dynamic Tourism Sustainability Index (DTSI++)**, predict tourist crowds, and recommend destinations based on weather conditions. |
-| **WAQI (World Air Quality Index) API**    | Provides real-time air quality measurements including AQI, PM2.5, PM10, CO, NO₂, and other pollutants.                                        | Used to evaluate environmental quality, compute sustainability scores, and recommend healthier destinations.                                             |
-| **OpenStreetMap (OSM)**                   | Open-source geospatial dataset containing maps, tourist attractions, roads, transport networks, and nearby points of interest.                | Used for geospatial queries, nearby destination search, eco-route planning, and location-based recommendations using MongoDB's 2dsphere indexing.        |
-| **India Open Government Tourism Dataset** | Historical tourism statistics including domestic and foreign tourist arrivals, visitor trends, and state-wise tourism data.                   | Used for crowd prediction, tourism trend analysis, government analytics, and training machine learning models.                                           |
-| **UNESCO World Heritage Dataset**         | Contains information about UNESCO-recognized cultural and natural heritage sites, including location and category.                            | Used to enrich destination profiles and recommend heritage tourism destinations.                                                                         |
-| **Festival Dataset**                      | Contains festival names, dates, locations, and expected tourist inflow during major events.                                                   | Used as an input feature for crowd prediction and estimating destination carrying capacity during festivals.                                             |
-| **Tourist Behaviour Dataset (Custom)**    | Stores users' historical travel behavior, including visited destinations, activities, stay duration, budget, ratings, and travel preferences. | Used to build the **Dynamic Tourist Interest Profiling (DTIP)** model for personalized recommendations without requiring surveys.                        |
+## Live data connectors
 
+Copy `.env.example` to `.env`, then add your own keys:
 
-
-## OVERVIEW OF ARCHITECTURE 
-
-1. **System Workflow** — overall data flow from user to dashboards
-2. **AI Analytics Pipeline** — the detailed internal processing shown above
-
-
-## 🏗️ System Workflow
-
-```mermaid
-flowchart TD
-    A[Data Source Layer] --> B[Data Ingestion & ETL Layer]
-    B --> C[Data Preprocessing & Feature Engineering]
-    C --> D[(MongoDB Atlas<br/>Core NoSQL Database)]
-    D --> E[AI & Analytics Layer]
-    E --> F[Application Service Layer<br/>Node.js REST API]
-    F --> G[Tourist Dashboard]
-    F --> H[Government Dashboard]
-    F --> I[Admin Dashboard]
-    G --> J[Web Portal & Mobile App]
-    H --> J
-    I --> J
+```dotenv
+MONGODB_URI=mongodb://127.0.0.1:27017
+MONGODB_DB=ecovoyage_ai
+JWT_SECRET=use-a-long-random-value-here
+OPENWEATHER_API_KEY=your_openweather_key
+WAQI_TOKEN=your_waqi_token
+INGEST_INTERVAL_MINUTES=60
+USE_ATLAS_SEARCH=false
+ATLAS_SEARCH_INDEX=destination-search
 ```
 
----
+The Administrator dashboard’s **Refresh environment & OSM data** button then calls these integrations:
 
-### 1. Data Source Layer
+- **OpenWeather**: temperature and weather condition
+- **WAQI**: air-quality index
+- **OpenStreetMap/Overpass**: nearby tourism POI count
 
-| Source | Data Provided |
+UNESCO heritage information, festivals and tourism statistics remain seeded in this prototype because the source datasets/API access credentials were not supplied. Seeded or fallback values are explicitly labelled in the app and database. Replace those documents with cited official exports before presenting research results as real-world findings.
+
+## Completion additions
+
+- **Automated ingestion:** Set `INGEST_INTERVAL_MINUTES` to `5` or greater to schedule the same validated environmental ingestion job used by the Admin dashboard. Each run is auditable in the `ingestionRuns` collection.
+- **Official-data import:** The Admin dashboard accepts JSON records for destinations, tourism statistics, historical environment readings, UNESCO/heritage sites, festivals and tourist-behaviour logs. It validates fields, normalises dates/coordinates/categories, records rejected-row examples and stores provenance in `sourceRegistry`. At 30 or more imported tourism-statistic rows, training uses them instead of the synthetic demonstration history.
+- **Full capacity factors:** Carrying-capacity calculations now account for weather, AQI, water availability, heritage protection and protected-area sensitivity.
+- **Similarity and eco-routes:** The hybrid ranker includes transparent cosine similarity to destinations in the tourist’s history. The Tourist dashboard also provides an OSRM-based route when reachable, transparent low-carbon travel guidance and an estimated shared-transport versus private-car comparison.
+- **Heatmap and latency:** Maps display crowd-pressure heat overlays. The Admin dashboard can persist local MongoDB timing results for `$near`, latest-environment `$lookup` and indexed tag filtering; Government users can view the latest latency evidence.
+- **Atlas Search fallback:** With an Atlas Search index configured, text search uses `$search`; a safe indexed-field/regex fallback keeps the local MongoDB classroom demo working without Atlas.
+
+## API endpoints
+
+| Endpoint | Purpose |
 |---|---|
-| 🌦 OpenWeather API | Real-time weather |
-| 🌫 WAQI API | Air quality |
-| 📍 OpenStreetMap | Geospatial data |
-| 🏛 Government Tourism | Historical visitor data |
-| 🏞 UNESCO | Heritage sites |
-| 🎉 Festival Dataset | Events & holidays |
-| 👤 Tourist Behaviour Dataset | Travel history, reviews, activities, budget, stay duration |
-
-### 2. Data Ingestion & ETL Layer
-- API Collectors
-- Batch Import
-- Scheduled Jobs
-- Data Synchronization
-- Validation
-
-### 3. Data Preprocessing & Feature Engineering
-- Missing value handling
-- Duplicate removal
-- Timestamp synchronization
-- Coordinate standardization
-- Feature extraction
-- Tourist behaviour extraction
-- Behaviour vector generation
-
-### 4. MongoDB Atlas (Core NoSQL Database)
-
-**Document Collections:** Users · Dynamic Tourist Profiles (DTIP) · Destinations · Reviews · Recommendations · Government Policies · Festival Events
-
-**Time-Series Collections:** Weather Logs · AQI Logs · Tourist Statistics · Crowd History
-
-**Geospatial Collections:** Tourist Attractions · Heritage Sites · Hotels · Protected Areas · Transport
-
-**MongoDB Features Used:**
-- ✅ Flexible Document Model
-- ✅ Embedded Documents
-- ✅ References
-- ✅ Time-Series Collections
-- ✅ 2dsphere Geospatial Index
-- ✅ Aggregation Pipeline
-- ✅ Atlas Search
-- ✅ Change Streams
-- ✅ TTL Index
-
-### 5. AI & Analytics Layer
-
-| # | Engine | Function |
-|---|---|---|
-| 1 | Dynamic Tourist Interest Profiling (DTIP) | Learns user preferences from historical travel behaviour |
-| 2 | Dynamic Tourism Sustainability Index (DTSI++) | Calculates adaptive sustainability score |
-| 3 | Crowd Prediction Engine | Predicts future tourist arrivals |
-| 4 | Carrying Capacity Prediction | Estimates destination capacity dynamically |
-| 5 | Hybrid Recommendation Engine | Combines behaviour + sustainability + weather + crowd |
-| 6 | Destination Similarity Engine | Finds sustainable alternative destinations |
-| 7 | EcoRoute Engine | Generates environmentally friendly travel routes |
-| 8 | Government Policy Recommendation Engine | Suggests tourism management strategies |
-
-### 6. Application Service Layer
-**Node.js REST API** — Authentication · Recommendation Service · Notification Service · Report Generation
-
-### 7. Dashboards
-
-| Tourist Dashboard | Government Dashboard | Admin Dashboard |
-|---|---|---|
-| Personalized recommendations | Tourism heatmaps | User management |
-| Weather & AQI | Crowd analytics | API monitoring |
-| Eco routes | Sustainability KPI | Dataset updates |
-| Similar places | Policy suggestions | Alerts |
-| Carbon footprint | Capacity analysis | Review moderation |
-| — | Government reports | System logs |
-
-→ **Web Portal & Mobile App**
-
-
-
-## 🔄 AI ANALYTICS PIPELINE / Internal System Processing Pipeline
-
-This diagram shows what actually happens behind the scenes — from the moment the user opens the app to the moment a recommendation is shown.
-
-```mermaid
-flowchart TD
-    A[User: Login / Search Destination] --> B[Retrieve User Travel History]
-    B --> C["Dynamic Tourist Interest Profiling (DTIP)<br/>• Visited Places • Activities • Budget<br/>• Stay Duration • Ratings • Season • Reviews"]
-    C --> D["Generate Tourist Interest Vector<br/>(Beach=0.82, Wildlife=0.35, Adventure=0.91...)"]
-    D --> E["Collect Real-Time Destination Data<br/>Weather · AQI · Tourism · Festivals · UNESCO · OpenStreetMap"]
-    E --> F["Store & Update MongoDB<br/>(Time-Series + Documents + Geo Collections)"]
-    F --> G["Retrieve Candidate Destinations<br/>via Geospatial Queries ($near, $geoWithin, Atlas Search)"]
-    G --> H["Feature Engineering Layer<br/>Behaviour Similarity · Weather Compatibility · AQI Score<br/>Crowd Density · Heritage Importance · Carbon Footprint<br/>Accessibility · Eco Score"]
-    H --> I[AI Analytics Engine]
-    I --> J[Rank All Destinations]
-    J --> K[Top-K Sustainable Recommendations]
-    K --> L[Tourist Dashboard]
-    K --> M[Government Dashboard]
-```
-
----
-
-### 🧠 AI Analytics Engine — Step by Step
-
-| # | Module | Inputs | Output |
-|---|---|---|---|
-| ① | Interest Prediction | Behaviour Vector | User Preference Profile |
-| ② | Crowd Prediction Model | Historical Visitors, Weather, Festivals, AQI | Predicted Tourist Count |
-| ③ | Dynamic Carrying Capacity Prediction | Predicted Crowd, Weather, Water Availability, Protected Areas | Max Safe Visitors |
-| ④ | Dynamic Sustainability Index (DTSI++) | AQI, Weather, Crowd, Carbon, Heritage, Water Stress | Sustainability Score (0–100) |
-| ⑤ | Similarity Engine | Destination Features | Similar Destinations |
-| ⑥ | Hybrid Recommendation Engine | All of the above | Final Ranked Recommendations |
-
-## PROPOSED METHODOLOGY (IN DETAIL)
-
-## 🧩 Proposed Methodology
-
-The proposed methodology consists of eight sequential phases that collectively enable the development of a **NoSQL-based Sustainable Tourism Intelligence and Decision Support System**. The system integrates historical tourist behavior, real-time environmental data, and machine learning models to generate personalized and sustainable travel recommendations while supporting government decision-making.
-
----
-
-### Phase 1: Data Acquisition
-
-The first phase involves collecting data from multiple heterogeneous sources to build a comprehensive tourism database. The system integrates both **real-time** and **historical** datasets.
-
-**Data Sources**
-
-- **OpenWeather API** – Weather conditions (temperature, humidity, rainfall, wind speed)
-- **WAQI API** – Air quality information (AQI, PM2.5, PM10)
-- **OpenStreetMap** – Geospatial information (tourist attractions, routes, nearby locations)
-- **Government Tourism Dataset** – Historical tourist arrivals and tourism statistics
-- **UNESCO Heritage Dataset** – Heritage site information
-- **Festival Dataset** – Festival dates and expected tourist inflow
-- **Tourist Behaviour Dataset** – User travel history, activities, ratings, budget, travel duration
-
-**Output:** Raw tourism, environmental, geospatial, and user behavior data.
-
----
-
-### Phase 2: Data Preprocessing and Integration
-
-The collected datasets undergo preprocessing to ensure consistency and quality before storage.
-
-**Operations Performed**
-
-- Remove duplicate records
-- Handle missing values
-- Standardize date and time formats
-- Normalize numerical values
-- Standardize geographical coordinates
-- Merge datasets from different sources
-- Encode categorical variables
-- Validate data integrity
-
-**Output:** Clean, standardized, and integrated datasets.
-
----
-
-### Phase 3: MongoDB NoSQL Data Management
-
-The processed data is stored in **MongoDB Atlas**, which serves as the central data repository. MongoDB is selected because of its flexibility in handling diverse and semi-structured tourism data.
-
-**Collections**
-
-- Users
-- Dynamic Tourist Profiles
-- Destinations
-- Weather
-- AQI
-- Tourist Statistics
-- Heritage Sites
-- Festivals
-- Recommendations
-- Reviews
-- Government Policies
-
-**MongoDB Features Used**
-
-- Document Collections
-- Time-Series Collections
-- Embedded Documents
-- Geospatial (2dsphere) Indexes
-- Aggregation Pipelines
-- Atlas Search
-- TTL Indexes
-
-**Output:** Efficiently organized NoSQL database for real-time querying and analytics.
-
----
-
-### Phase 4: Dynamic Tourist Interest Profiling (DTIP)
-
-Unlike traditional tourism applications that rely on questionnaires, the proposed system automatically learns user preferences by analyzing historical travel behavior.
-
-**Input Features**
-
-- Previously visited destinations
-- Preferred activities
-- Budget
-- Travel duration
-- Ratings
-- Travel season
-- Transportation mode
-- Reviews
-
-**Process**
-
-- Extract behavioral patterns
-- Generate a user preference vector
-- Continuously update the profile after every trip
-
-**Output:** A **Dynamic Tourist Interest Profile (DTIP)** representing the user's travel interests without requiring manual surveys.
-
----
-
-### Phase 5: Feature Engineering
-
-Relevant features are extracted from multiple datasets to prepare inputs for machine learning models.
-
-**Generated Features**
-
-- Tourist Interest Score
-- Weather Compatibility Score
-- Air Quality Score
-- Crowd Density Index
-- Accessibility Score
-- Heritage Importance Score
-- Carbon Footprint Score
-- Eco Score
-- Destination Similarity Score
-
-These features are combined into a unified feature vector for each destination.
-
----
-
-### Phase 6: AI Analytics and Prediction
-
-Machine learning techniques are employed to analyze tourism patterns and generate intelligent predictions.
-
-#### Module 1: Crowd Prediction
-
-Predicts future tourist arrivals based on historical trends and environmental conditions.
-
-| | |
-|---|---|
-| **Inputs** | Historical visitors, Weather, Festivals, AQI, Season |
-| **Algorithm** | Random Forest Regressor (or XGBoost) |
-| **Output** | Predicted crowd density |
-
-#### Module 2: Dynamic Tourism Sustainability Index (DTSI++)
-
-Computes an adaptive sustainability score for each destination by combining environmental and tourism indicators.
-
-**Factors:** Air Quality · Weather · Crowd Density · Carbon Footprint · Heritage Sensitivity · Accessibility · Water Availability
-
-Unlike static scoring methods, the weight of each factor changes dynamically based on contextual conditions.
-
-**Output:** Dynamic Sustainability Score (0–100).
-
-#### Module 3: Destination Carrying Capacity Prediction
-
-Estimates the maximum number of tourists a destination can sustainably accommodate under current conditions.
-
-**Inputs:** Predicted crowd, Weather, Water availability, Infrastructure capacity, Protected area constraints
-
-**Output:** Estimated carrying capacity.
-
-#### Module 4: Hybrid Recommendation Engine
-
-Generates personalized destination recommendations by combining multiple decision factors.
-
-**Recommendation Factors**
-
-- User Interest Profile (DTIP)
-- Sustainability Score (DTSI++)
-- Crowd Prediction
-- Weather Compatibility
-- Destination Similarity
-- Distance
-- Budget Compatibility
-
-Destinations are ranked based on a composite recommendation score.
-
-**Output:** Top-K sustainable destination recommendations.
-
----
-
-### Phase 7: Dashboard Generation
-
-The processed results are presented through dedicated dashboards.
-
-**Tourist Dashboard**
-- Personalized destination recommendations
-- Sustainability score
-- Crowd prediction
-- Weather and AQI
-- Eco-friendly route suggestions
-- Similar destinations
-
-**Government Dashboard**
-- Tourism heatmaps
-- Tourist density
-- Destination carrying capacity
-- Sustainability analytics
-- Overtourism alerts
-- Policy recommendations
-
-**Admin Dashboard**
-- User management
-- Destination management
-- Dataset updates
-- API monitoring
-- Review moderation
-- System analytics
-
----
-
-### Phase 8: Performance Evaluation
-
-The proposed system is evaluated using both machine learning and recommendation system metrics.
-
-**Prediction Metrics:** RMSE · MAE · R² Score
-
-**Recommendation Metrics:** Precision@K · Recall@K · NDCG
-
-**Database Performance:** MongoDB query execution time · Aggregation pipeline performance · Geospatial query latency · API response time
-
----
-
-### ⭐ Novelty Highlight
-
-The proposed methodology differs from existing tourism recommendation systems by:
-
-- **Eliminating user questionnaires** through the **Dynamic Tourist Interest Profiling (DTIP)** module, which automatically learns preferences from travel history.
-- **Introducing an adaptive Dynamic Tourism Sustainability Index (DTSI++)**, where factor weights change based on contextual conditions such as weather, festivals, or environmental risks.
-- **Leveraging MongoDB's document, time-series, and geospatial capabilities** as the central platform for storing and processing heterogeneous tourism data.
-- **Integrating multiple AI modules** (interest profiling, crowd prediction, carrying capacity estimation, and hybrid recommendation) into a unified **Decision Support System** that serves both tourists and government authorities.
-
-This combination of behavioral personalization, sustainability analytics, and NoSQL-driven real-time processing distinguishes the proposed approach from conventional tourism recommendation platforms.
-
-
-## 🖥️ Hardware Configuration
-
-| Component | Specification |
-|---|---|
-| Processor | Intel Core i5 (10th Gen or above) / AMD Ryzen 5 or above |
-| RAM | Minimum 8 GB (16 GB Recommended) |
-| Storage | 256 GB SSD or higher |
-| Graphics | Integrated Graphics (Dedicated GPU optional for faster ML training) |
-| Internet | Stable broadband connection for accessing real-time APIs |
-| Operating System | Windows 10/11, Ubuntu 22.04+, or macOS |
-
-> **Minimum Requirement:** Intel i5 + 8 GB RAM + SSD
-
----
-
-## 🛠️ Software Configuration
-
-| Software | Purpose |
-|---|---|
-| Operating System | Windows 11 / Ubuntu / macOS |
-| Python 3.11+ | Machine Learning & Backend Processing |
-| MongoDB Atlas / MongoDB Community | NoSQL Database |
-| MongoDB Compass | Database Management |
-| Node.js | Backend API Development |
-| Express.js | REST API Framework |
-| React.js | Tourist, Government & Admin Dashboards |
-| Visual Studio Code | Development Environment |
-| Postman | API Testing |
-| Git & GitHub | Version Control |
-| Scikit-learn | Machine Learning Models |
-| XGBoost | Crowd Prediction & Recommendation Models |
-| Pandas | Data Preprocessing |
-| NumPy | Numerical Computing |
-| Matplotlib / Plotly | Data Visualization |
-| Folium / Leaflet.js | Interactive Maps |
-| JWT | Authentication & Authorization |
-
----
-
-## ✅ Working Prototype
-
-The proposed system is implemented in this repository as a MongoDB-backed React and Express application. It includes the three role-based dashboards (Tourist, Government and Administrator), JWT login, Dynamic Tourist Interest Profiling (DTIP), DTSI++ sustainability scoring, MongoDB GeoJSON nearby search, a native MongoDB time-series environmental collection, a Random Forest crowd predictor, carrying-capacity assessment and a hybrid destination recommender.
-
-See [IMPLEMENTATION.md](IMPLEMENTATION.md) for setup instructions, the demo accounts, API endpoints, database collections, live data connector configuration and the research-data limitations of the prototype.
-
+| `POST /api/auth/login` | Role-aware sign-in and JWT issuance |
+| `GET /api/bootstrap` | Role dashboard data, recommendations and data-source status |
+| `POST /api/interactions` | Tourist behavioural event / DTIP update |
+| `GET /api/destinations/nearby` | MongoDB `$near` geospatial destinations |
+| `GET /api/government/overview` | Capacity pressure and engagement analytics |
+| `GET /api/analytics/evaluation` | Model / recommender evaluation metrics |
+| `GET /api/admin/database/status` | Collection counts, indexes and latest model evidence |
+| `POST /api/admin/environment/snapshots` | Manually insert an environmental reading |
+| `POST /api/admin/ingestion/run` | Run configured OpenWeather, WAQI and OSM ingestion |
+| `POST /api/admin/models/train` | Train and persist a Random Forest evaluation run |
+| `GET /api/destinations/search?q=...` | Destination discovery via Atlas Search or local fallback |
+| `GET /api/routes/eco?destinationId=...` | Road/fallback geometry and transparent low-impact travel guidance |
+| `POST /api/admin/performance/run` | Persist local MongoDB query-latency evidence |
+| `POST /api/admin/datasets/import` | Validate, normalise and import official JSON data with provenance |
+
+## Research-data note
+
+The currently stored historical visitor records and relevance labels are synthetic demo data. They validate the pipeline and calculation flow, but they must be replaced with a cited India tourism dataset before the evaluation scores are reported in the paper as experimental results.

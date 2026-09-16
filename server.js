@@ -7,13 +7,9 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { MongoClient } = require('mongodb');
 const { round, predictModel, trainCrowdModel, capacityAssessment } = require('./lib/analytics');
-const { buildResearchReadiness } = require('./lib/research-readiness');
-const { connectorSummary } = require('./lib/connector-audit');
 
 const ROOT = __dirname;
 const SEED = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'seed.json'), 'utf8'));
-const OFFICIAL_REGIONAL_TOURISM_STATS = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'official', 'tourism-state-visits-2023-2024.json'), 'utf8'));
-const OFFICIAL_UNESCO_HERITAGE = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'official', 'unesco-world-heritage.json'), 'utf8'));
 const PORT = process.env.PORT || 3000;
 const URI = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017';
 const DB_NAME = process.env.MONGODB_DB || 'ecovoyage_ai';
@@ -154,7 +150,7 @@ async function latestDestinations() {
 }
 
 async function databaseSummary() {
-  const names = ['users', 'destinations', 'heritageSites', 'visits', 'environmentReadings', 'festivals', 'tourismStatistics', 'regionalTourismStatistics', 'modelRuns', 'capacityAssessments', 'ingestionRuns', 'performanceRuns', 'sourceRegistry'];
+  const names = ['users', 'destinations', 'heritageSites', 'visits', 'environmentReadings', 'festivals', 'tourismStatistics', 'modelRuns', 'capacityAssessments', 'ingestionRuns', 'performanceRuns', 'sourceRegistry'];
   const collectionCounts = Object.fromEntries(await Promise.all(names.map(async name => [name, await db.collection(name).countDocuments()])));
   const [latestRun, latestReading, visitSummary, latestPerformance, latestIngestion] = await Promise.all([
     db.collection('modelRuns').find().sort({ trainedAt: -1 }).limit(1).next(),
@@ -168,7 +164,7 @@ async function databaseSummary() {
     latestModel: latestRun ? { algorithm: latestRun.algorithm, trainedAt: latestRun.trainedAt, regression: latestRun.regression, recommendation: latestRun.recommendation, dataLabel: latestRun.dataLabel } : null,
     latestReadingAt: latestReading?.recordedAt || null,
     latestPerformance: latestPerformance ? { recordedAt: latestPerformance.recordedAt, operations: latestPerformance.operations, environment: latestPerformance.environment } : null,
-    latestIngestion: latestIngestion ? { trigger: latestIngestion.trigger, completedAt: latestIngestion.completedAt, recordsWritten: latestIngestion.recordsWritten, liveRecords: latestIngestion.liveRecords, connectorSummary: latestIngestion.connectorSummary || null } : null,
+    latestIngestion: latestIngestion ? { trigger: latestIngestion.trigger, completedAt: latestIngestion.completedAt, recordsWritten: latestIngestion.recordsWritten, liveRecords: latestIngestion.liveRecords } : null,
     visitSummary
   };
 }
@@ -183,10 +179,7 @@ async function getModel() { return db.collection('modelRuns').find().sort({ trai
 async function runModelTraining() {
   const [destinations, statistics, festivals] = await Promise.all([db.collection('destinations').find().toArray(), db.collection('tourismStatistics').find().toArray(), db.collection('festivals').find().toArray()]);
   const byDestination = Object.fromEntries(destinations.map(destination => [destination.id, destination]));
-  // State/UT totals are valuable policy context, but are not ground-truth counts for a
-  // particular destination. Train only on explicitly approved destination-level rows.
-  const eligibleStatistics = statistics.filter(record => record.geographicLevel === 'destination' && record.modelEligible === true);
-  const history = eligibleStatistics.map(record => {
+  const history = statistics.map(record => {
     const destination = byDestination[record.destinationId];
     const reportedAt = new Date(record.reportedAt);
     if (!destination || Number.isNaN(reportedAt.getTime())) return null;
@@ -198,12 +191,7 @@ async function runModelTraining() {
     };
   }).filter(Boolean);
   const run = trainCrowdModel(destinations, history);
-  run.trainingData = {
-    tourismRowsAvailable: statistics.length,
-    eligibleDestinationRows: history.length,
-    excludedForGranularity: statistics.length - eligibleStatistics.length,
-    source: history.length >= 30 ? 'approved destination-level tourismStatistics records' : 'synthetic fallback until at least 30 approved destination-level records are available'
-  };
+  run.trainingData = { importedRowsAvailable: history.length, source: history.length >= 30 ? 'tourismStatistics collection' : 'synthetic fallback until at least 30 imported records are available' };
   await db.collection('modelRuns').insertOne(run);
   return run;
 }
@@ -218,34 +206,27 @@ async function syncAssessments(destinations, model, festivals) {
 
 async function fetchLiveData(destination) {
   const point = destination.location.coordinates;
-  const result = { destinationId: destination.id, source: [], aqi: destination.aqi, weather: destination.weather, temperature: destination.temperature, rainRisk: destination.rainRisk, poiCount: null, live: false, notes: [], connectorStatus: {} };
+  const result = { destinationId: destination.id, source: [], aqi: destination.aqi, weather: destination.weather, temperature: destination.temperature, rainRisk: destination.rainRisk, poiCount: null, live: false, notes: [] };
   if (process.env.OPENWEATHER_API_KEY) {
-    try {
-      const response = await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${point[1]}&lon=${point[0]}&appid=${process.env.OPENWEATHER_API_KEY}&units=metric`, { signal: AbortSignal.timeout(8000) });
-      if (!response.ok) throw new Error(`returned ${response.status}`);
-      const weather = await response.json();
-      if (!Number.isFinite(Number(weather.main?.temp))) throw new Error('returned no usable temperature');
-      result.temperature = Number(weather.main.temp);
-      result.rainRisk = Math.min(100, Math.round((weather.clouds?.all || 0) * .65 + (weather.rain ? 35 : 0)));
-      result.weather = weather.weather?.[0]?.main?.toLowerCase().includes('clear') ? 'pleasant' : weather.main.temp > 29 ? 'warm' : 'humid';
-      result.source.push('OpenWeather'); result.live = true; result.connectorStatus.OpenWeather = 'success';
-    } catch (error) { result.connectorStatus.OpenWeather = 'failed'; result.notes.push(`OpenWeather unavailable: ${error.message}`); }
-  } else { result.connectorStatus.OpenWeather = 'not-configured'; result.notes.push('OpenWeather key not configured; seeded weather retained.'); }
+    const response = await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${point[1]}&lon=${point[0]}&appid=${process.env.OPENWEATHER_API_KEY}&units=metric`);
+    if (!response.ok) throw new Error(`OpenWeather returned ${response.status}`);
+    const weather = await response.json();
+    result.temperature = weather.main.temp;
+    result.rainRisk = Math.min(100, Math.round((weather.clouds?.all || 0) * .65 + (weather.rain ? 35 : 0)));
+    result.weather = weather.weather?.[0]?.main?.toLowerCase().includes('clear') ? 'pleasant' : weather.main.temp > 29 ? 'warm' : 'humid';
+    result.source.push('OpenWeather'); result.live = true;
+  } else result.notes.push('OpenWeather key not configured; seeded weather retained.');
   if (process.env.WAQI_TOKEN) {
-    try {
-      const response = await fetch(`https://api.waqi.info/feed/geo:${point[1]};${point[0]}/?token=${process.env.WAQI_TOKEN}`, { signal: AbortSignal.timeout(8000) });
-      if (!response.ok) throw new Error(`returned ${response.status}`);
-      const aqi = await response.json();
-      if (aqi.status !== 'ok' || !Number.isFinite(Number(aqi.data?.aqi))) throw new Error('returned no usable AQI');
-      result.aqi = Number(aqi.data.aqi); result.source.push('WAQI'); result.live = true; result.connectorStatus.WAQI = 'success';
-    } catch (error) { result.connectorStatus.WAQI = 'failed'; result.notes.push(`WAQI unavailable: ${error.message}`); }
-  } else { result.connectorStatus.WAQI = 'not-configured'; result.notes.push('WAQI token not configured; seeded AQI retained.'); }
+    const response = await fetch(`https://api.waqi.info/feed/geo:${point[1]};${point[0]}/?token=${process.env.WAQI_TOKEN}`);
+    if (!response.ok) throw new Error(`WAQI returned ${response.status}`);
+    const aqi = await response.json();
+    if (aqi.status === 'ok') { result.aqi = Number(aqi.data.aqi); result.source.push('WAQI'); result.live = true; }
+  } else result.notes.push('WAQI token not configured; seeded AQI retained.');
   try {
     const query = `[out:json][timeout:20];(nwr["tourism"](around:10000,${point[1]},${point[0]}););out center;`;
-    const response = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: query, signal: AbortSignal.timeout(12000) });
-    if (!response.ok) throw new Error(`returned ${response.status}`);
-    const osm = await response.json(); result.poiCount = osm.elements?.length || 0; result.source.push('OpenStreetMap'); result.live = true; result.connectorStatus.OpenStreetMap = 'success';
-  } catch (error) { result.connectorStatus.OpenStreetMap = 'failed'; result.notes.push(`OpenStreetMap unavailable: ${error.message}`); }
+    const response = await fetch('https://overpass-api.de/api/interpreter', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: query });
+    if (response.ok) { const osm = await response.json(); result.poiCount = osm.elements?.length || 0; result.source.push('OpenStreetMap'); result.live = true; }
+  } catch { result.notes.push('OSM collector unavailable; no POI count refreshed.'); }
   return result;
 }
 
@@ -255,9 +236,9 @@ async function ingestEnvironment(destinationIds) {
   for (const destination of destinations) {
     try {
       const live = await fetchLiveData(destination);
-      readings.push({ meta: { destinationId: destination.id, source: live.source.length ? live.source.join(', ') : 'seeded-fallback' }, aqi: live.aqi, weather: live.weather, temperature: live.temperature, rainRisk: live.rainRisk, poiCount: live.poiCount, isLive: live.live, notes: live.notes, connectorStatus: live.connectorStatus, recordedAt: new Date() });
+      readings.push({ meta: { destinationId: destination.id, source: live.source.length ? live.source.join(', ') : 'seeded-fallback' }, aqi: live.aqi, weather: live.weather, temperature: live.temperature, rainRisk: live.rainRisk, poiCount: live.poiCount, isLive: live.live, notes: live.notes, recordedAt: new Date() });
     } catch (error) {
-      readings.push({ meta: { destinationId: destination.id, source: 'seeded-fallback' }, aqi: destination.aqi, weather: destination.weather, temperature: destination.temperature, rainRisk: destination.rainRisk, poiCount: null, isLive: false, notes: [error.message], connectorStatus: { OpenWeather: 'failed', WAQI: 'failed', OpenStreetMap: 'failed' }, recordedAt: new Date() });
+      readings.push({ meta: { destinationId: destination.id, source: 'seeded-fallback' }, aqi: destination.aqi, weather: destination.weather, temperature: destination.temperature, rainRisk: destination.rainRisk, poiCount: null, isLive: false, notes: [error.message], recordedAt: new Date() });
     }
   }
   if (readings.length) await db.collection('environmentReadings').insertMany(readings);
@@ -275,7 +256,6 @@ async function runIngestionJob(trigger = 'manual', destinationIds) {
       recordsWritten: readings.length,
       liveRecords: readings.filter(reading => reading.isLive).length,
       sources: [...new Set(readings.flatMap(reading => reading.meta.source.split(', ')))],
-      connectorSummary: connectorSummary(readings),
       status: 'completed'
     };
     await db.collection('ingestionRuns').insertOne(run);
@@ -307,7 +287,7 @@ async function runPerformanceEvaluation() {
   const run = {
     recordedAt: new Date(),
     operations: Object.fromEntries(Object.entries(samples).map(([name, values]) => [name, latencySummary(values)])),
-    environment: { database: DB_NAME, host: process.platform, deployment: URI.startsWith('mongodb+srv://') ? 'mongodb-atlas' : 'local-mongodb', samplesPerOperation: 12, dataLabel: 'benchmark is valid only for the recorded deployment environment' }
+    environment: { database: DB_NAME, host: process.platform, samplesPerOperation: 12, dataLabel: 'local development benchmark; rerun in the target deployment environment' }
   };
   await db.collection('performanceRuns').insertOne(run);
   return run;
@@ -347,17 +327,7 @@ function normaliseDatasetRecord(dataset, raw, index) {
     const reportedAt = normaliseDate(record.reportedAt || record.date || record.period);
     const visitors = Number(record.visitors ?? record.arrivals ?? record.count);
     if (!destinationId || !reportedAt || !Number.isFinite(visitors) || visitors < 0) return { error: `Row ${sourceRow}: tourism statistics require destinationId, date and non-negative visitors.` };
-    const geographicLevel = safeText(record.geographicLevel || 'destination').toLowerCase();
-    if (geographicLevel !== 'destination') return { error: `Row ${sourceRow}: use regional tourism statistics for state/UT/district totals.` };
-    return { value: { destinationId, reportedAt, visitors: Math.round(visitors), domesticVisitors: Number.isFinite(Number(record.domesticVisitors)) ? Math.round(Number(record.domesticVisitors)) : null, foreignVisitors: Number.isFinite(Number(record.foreignVisitors)) ? Math.round(Number(record.foreignVisitors)) : null, sourcePeriod: safeText(record.sourcePeriod || ''), geographicLevel, modelEligible: record.modelEligible === true, dataLabel: 'external-import' } };
-  }
-  if (dataset === 'regionalTourismStatistics') {
-    const region = safeText(record.region || record.state || record.unionTerritory);
-    const reportedAt = normaliseDate(record.reportedAt || record.date || record.period);
-    const domesticVisitsMillions = Number(record.domesticVisitsMillions ?? record.domesticVisitorsMillions ?? record.domesticVisits);
-    const foreignVisitsMillions = Number(record.foreignVisitsMillions ?? record.foreignVisitorsMillions ?? record.foreignVisits);
-    if (!region || !reportedAt || !Number.isFinite(domesticVisitsMillions) || domesticVisitsMillions < 0 || !Number.isFinite(foreignVisitsMillions) || foreignVisitsMillions < 0) return { error: `Row ${sourceRow}: regional tourism statistics require region, date, domesticVisitsMillions and foreignVisitsMillions.` };
-    return { value: { region, reportedAt, domesticVisitsMillions: round(domesticVisitsMillions, 3), foreignVisitsMillions: round(foreignVisitsMillions, 3), sourcePeriod: safeText(record.sourcePeriod || ''), geographicLevel: 'state-or-ut', modelEligible: false, dataLabel: 'external-import' } };
+    return { value: { destinationId, reportedAt, visitors: Math.round(visitors), domesticVisitors: Number.isFinite(Number(record.domesticVisitors)) ? Math.round(Number(record.domesticVisitors)) : null, foreignVisitors: Number.isFinite(Number(record.foreignVisitors)) ? Math.round(Number(record.foreignVisitors)) : null, sourcePeriod: safeText(record.sourcePeriod || ''), dataLabel: 'external-import' } };
   }
   if (dataset === 'festivals') {
     const destinationId = slug(record.destinationId || record.destination || record.place);
@@ -371,9 +341,7 @@ function normaliseDatasetRecord(dataset, raw, index) {
     const longitude = Number(record.longitude ?? record.lng ?? record.location?.coordinates?.[0]);
     const name = safeText(record.name || record.site);
     if (!destinationId || !name || !Number.isFinite(latitude) || !Number.isFinite(longitude) || Math.abs(latitude) > 90 || Math.abs(longitude) > 180) return { error: `Row ${sourceRow}: heritage record requires destinationId, name and valid latitude/longitude.` };
-    const inscribedYear = Number(record.inscribedYear);
-    const criteria = (Array.isArray(record.criteria) ? record.criteria : String(record.criteria || '').split(',')).map(item => safeText(item).replace(/[()]/g, '')).filter(Boolean).slice(0, 10);
-    return { value: { id: slug(record.id || `${destinationId}-${name}`), destinationId, name, category: safeText(record.category || 'heritage'), location: { type: 'Point', coordinates: [longitude, latitude] }, protectionLevel: clamp(record.protectionLevel ?? record.heritageScore ?? 75), protectionLevelBasis: safeText(record.protectionLevelBasis || 'application-configured safeguard'), officialId: safeText(record.officialId || record.unescoId || ''), officialDesignation: safeText(record.officialDesignation || ''), inscribedYear: Number.isInteger(inscribedYear) && inscribedYear > 1800 && inscribedYear <= new Date().getFullYear() ? inscribedYear : null, criteria, propertyHectares: Number.isFinite(Number(record.propertyHectares)) ? Number(record.propertyHectares) : null, dataLabel: 'external-import' } };
+    return { value: { id: slug(record.id || `${destinationId}-${name}`), destinationId, name, category: safeText(record.category || 'heritage'), location: { type: 'Point', coordinates: [longitude, latitude] }, protectionLevel: clamp(record.protectionLevel ?? record.heritageScore ?? 75), dataLabel: 'external-import' } };
   }
   if (dataset === 'environmentReadings') {
     const destinationId = slug(record.destinationId || record.destination || record.place);
@@ -387,18 +355,14 @@ function normaliseDatasetRecord(dataset, raw, index) {
     const destinationId = slug(record.destinationId || record.destination || record.place);
     const at = normaliseDate(record.at || record.date || new Date());
     if (!userId || !destinationId || !at) return { error: `Row ${sourceRow}: behaviour requires userId, destinationId and date.` };
-    const researchConsent = record.researchConsent === true;
-    const deidentified = record.deidentified === true;
-    const consentReference = safeText(record.consentReference || '');
-    if (researchConsent && (!deidentified || !consentReference)) return { error: `Row ${sourceRow}: research-consented behaviour requires deidentified: true and a non-identifying consentReference.` };
-    return { value: { userId, destinationId, action: safeText(record.action || 'visited'), rating: Number.isFinite(Number(record.rating)) ? clamp(record.rating, 1, 5) : null, durationNights: Number.isFinite(Number(record.durationNights)) ? clamp(record.durationNights, 0, 90) : null, tripBudget: Number.isFinite(Number(record.tripBudget)) ? clamp(record.tripBudget, 0, 1000000) : null, season: safeText(record.season || ''), researchConsent, deidentified, consentReference, at, source: 'external-import', dataLabel: 'external-import' } };
+    return { value: { userId, destinationId, action: safeText(record.action || 'visited'), rating: Number.isFinite(Number(record.rating)) ? clamp(record.rating, 1, 5) : null, durationNights: Number.isFinite(Number(record.durationNights)) ? clamp(record.durationNights, 0, 90) : null, tripBudget: Number.isFinite(Number(record.tripBudget)) ? clamp(record.tripBudget, 0, 1000000) : null, season: safeText(record.season || ''), at, source: 'external-import', dataLabel: 'external-import' } };
   }
   return { error: `Unsupported dataset: ${dataset}.` };
 }
 
 async function importDataset({ dataset, records, sourceName, sourceUrl }) {
-  const supported = ['destinations', 'tourismStatistics', 'regionalTourismStatistics', 'festivals', 'heritageSites', 'environmentReadings', 'behaviour'];
-  if (!supported.includes(dataset)) throw new Error('Choose destinations, destination tourism statistics, regional tourism statistics, festivals, heritage sites, environmental readings or behaviour.');
+  const supported = ['destinations', 'tourismStatistics', 'festivals', 'heritageSites', 'environmentReadings', 'behaviour'];
+  if (!supported.includes(dataset)) throw new Error('Choose destinations, tourismStatistics, festivals, heritageSites, environmentReadings or behaviour.');
   if (!Array.isArray(records) || !records.length || records.length > MAX_IMPORT_RECORDS) throw new Error(`Provide 1 to ${MAX_IMPORT_RECORDS} JSON records.`);
   const accepted = []; const rejected = [];
   records.forEach((record, index) => {
@@ -421,30 +385,11 @@ async function importDataset({ dataset, records, sourceName, sourceUrl }) {
 async function dataSourceStatus() {
   const imported = await db.collection('sourceRegistry').find().toArray();
   const byKey = Object.fromEntries(imported.map(record => [record.key, record]));
-  const state = key => {
-    const record = byKey[key];
-    if (record?.status === 'bundled-official') return `bundled official extract (${record.recordsAccepted || 0} rows; contextual only)`;
-    return record?.lastImportedAt ? `imported ${new Date(record.lastImportedAt).toLocaleDateString('en-IN')}` : 'awaiting official import';
-  };
+  const state = key => byKey[key]?.lastImportedAt ? `imported ${new Date(byKey[key].lastImportedAt).toLocaleDateString('en-IN')}` : 'awaiting official import';
   return {
     OpenWeather: process.env.OPENWEATHER_API_KEY ? 'configured' : 'needs API key', WAQI: process.env.WAQI_TOKEN ? 'configured' : 'needs API key', OpenStreetMap: 'public connector',
-    UNESCO: state('unesco'), festivals: state('festivals'), destinationTourism: state('tourismStatistics'), regionalTourism: state('regionalTourismStatistics'), touristBehaviour: state('behaviour'), historicalEnvironment: state('environmentReadings'), scheduler: INGEST_INTERVAL_MINUTES > 0 ? `every ${INGEST_INTERVAL_MINUTES} min` : 'manual only', atlasSearch: USE_ATLAS_SEARCH ? 'enabled' : 'MongoDB fallback search'
+    UNESCO: state('unesco'), festivals: state('festivals'), tourismStatistics: state('tourismStatistics'), touristBehaviour: state('behaviour'), historicalEnvironment: state('environmentReadings'), scheduler: INGEST_INTERVAL_MINUTES > 0 ? `every ${INGEST_INTERVAL_MINUTES} min` : 'manual only', atlasSearch: USE_ATLAS_SEARCH ? 'enabled' : 'MongoDB fallback search'
   };
-}
-
-async function researchReadiness() {
-  const [destinationObservations, historicalEnvironmentObservations, approvedBehaviourRatings, liveEnvironmentObservations, latestPerformance, sourceRegistry] = await Promise.all([
-    db.collection('tourismStatistics').countDocuments({ geographicLevel: 'destination', modelEligible: true }),
-    db.collection('environmentReadings').countDocuments({ dataLabel: 'external-import' }),
-    db.collection('visits').countDocuments({ researchConsent: true, deidentified: true, consentReference: { $type: 'string', $ne: '' }, rating: { $type: 'number' } }),
-    db.collection('environmentReadings').countDocuments({ isLive: true }),
-    db.collection('performanceRuns').find().sort({ recordedAt: -1 }).limit(1).next(),
-    db.collection('sourceRegistry').find().toArray()
-  ]);
-  return buildResearchReadiness(
-    { destinationObservations, historicalEnvironmentObservations, approvedBehaviourRatings, liveEnvironmentObservations, latestPerformance, sourceRegistry },
-    { openWeather: Boolean(process.env.OPENWEATHER_API_KEY), waqi: Boolean(process.env.WAQI_TOKEN), atlasDeployment: URI.startsWith('mongodb+srv://'), atlasSearch: USE_ATLAS_SEARCH }
-  );
 }
 
 function escapeRegex(value) { return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
@@ -544,7 +489,7 @@ app.post('/api/interactions', auth('tourist'), async (req, res) => {
   const history = [destination.name, ...(req.user.history || [])].slice(0, 25);
   await Promise.all([
     db.collection('users').updateOne({ id: req.user.id }, { $set: { interests, history } }),
-    db.collection('visits').insertOne({ userId: req.user.id, destinationId: destination.id, action: safeText(action || 'saved'), rating: Number.isFinite(Number(rating)) ? clamp(rating, 1, 5) : null, durationNights: Number.isFinite(Number(durationNights)) ? clamp(durationNights, 0, 90) : null, tripBudget: Number.isFinite(Number(tripBudget)) ? clamp(tripBudget, 0, 1000000) : null, season: safeText(season || ''), researchConsent: false, deidentified: false, at: new Date(), source: 'web-dashboard' })
+    db.collection('visits').insertOne({ userId: req.user.id, destinationId: destination.id, action: safeText(action || 'saved'), rating: Number.isFinite(Number(rating)) ? clamp(rating, 1, 5) : null, durationNights: Number.isFinite(Number(durationNights)) ? clamp(durationNights, 0, 90) : null, tripBudget: Number.isFinite(Number(tripBudget)) ? clamp(tripBudget, 0, 1000000) : null, season: safeText(season || ''), at: new Date(), source: 'web-dashboard' })
   ]);
   res.status(201).json({ message: 'DTIP profile updated from observed behaviour.', interests, history });
 });
@@ -569,11 +514,9 @@ app.get('/api/analytics/evaluation', auth('government', 'admin'), async (req, re
 });
 
 app.get('/api/admin/database/status', auth('admin'), async (req, res) => {
-  const [summary, destinationIndexes, readingIndexes, readiness] = await Promise.all([databaseSummary(), db.collection('destinations').indexes(), db.collection('environmentReadings').indexes(), researchReadiness()]);
-  res.json({ ...summary, researchReadiness: readiness, indexes: { destinations: destinationIndexes.map(index => index.name), environmentReadings: readingIndexes.map(index => index.name) } });
+  const [summary, destinationIndexes, readingIndexes] = await Promise.all([databaseSummary(), db.collection('destinations').indexes(), db.collection('environmentReadings').indexes()]);
+  res.json({ ...summary, indexes: { destinations: destinationIndexes.map(index => index.name), environmentReadings: readingIndexes.map(index => index.name) } });
 });
-
-app.get('/api/admin/research-readiness', auth('admin'), async (req, res) => res.json(await researchReadiness()));
 
 app.post('/api/admin/environment/snapshots', auth('admin'), async (req, res) => {
   const { destinationId, aqi, weather, temperature, rainRisk, source = 'admin-manual' } = req.body || {};
@@ -610,7 +553,6 @@ async function initialise() {
   await db.collection('heritageSites').createIndex({ destinationId: 1 });
   await db.collection('visits').createIndex({ userId: 1, at: -1 });
   await db.collection('tourismStatistics').createIndex({ destinationId: 1, reportedAt: -1 });
-  await db.collection('regionalTourismStatistics').createIndex({ region: 1, reportedAt: -1 });
   await db.collection('festivals').createIndex({ destinationId: 1, month: 1 });
   await db.collection('modelRuns').createIndex({ trainedAt: -1 });
   await db.collection('capacityAssessments').createIndex({ destinationId: 1, createdAt: -1 });
@@ -627,63 +569,12 @@ async function initialise() {
     } }]);
   }
   if (!await db.collection('festivals').countDocuments()) await db.collection('festivals').insertMany(festivalSeeds);
-  const heritageImportedAt = new Date();
-  await db.collection('heritageSites').bulkWrite(OFFICIAL_UNESCO_HERITAGE.map(site => ({
-    updateOne: {
-      filter: { id: site.id },
-      update: {
-        $setOnInsert: {
-          ...site,
-          source: 'UNESCO World Heritage Centre',
-          sourceUrl: site.officialUrl,
-          importedAt: heritageImportedAt,
-          dataLabel: 'official UNESCO World Heritage record; protection level is an application safeguard, not a UNESCO score'
-        }
-      },
-      upsert: true
-    }
-  })));
-  await db.collection('destinations').bulkWrite(OFFICIAL_UNESCO_HERITAGE.map(site => ({
-    updateOne: {
-      filter: { id: site.destinationId },
-      update: {
-        $set: {
-          unescoWorldHeritage: {
-            siteId: site.officialId,
-            designation: site.officialDesignation,
-            category: site.category,
-            inscribedYear: site.inscribedYear,
-            criteria: site.criteria,
-            sourceUrl: site.officialUrl
-          }
-        }
-      }
-    }
-  })));
-  if (!await db.collection('regionalTourismStatistics').countDocuments()) {
-    const importedAt = new Date();
-    await db.collection('regionalTourismStatistics').insertMany(OFFICIAL_REGIONAL_TOURISM_STATS.map(record => ({
-      ...record,
-      reportedAt: new Date(record.reportedAt),
-      geographicLevel: 'state-or-ut',
-      modelEligible: false,
-      source: 'Ministry of Tourism, Government of India',
-      sourceUrl: 'https://data.tourism.gov.in/mrd/Uploads/tourism_data/India%20Tourism%20Data%20Compendium%202025_1.pdf',
-      importedAt,
-      dataLabel: 'official public state/UT aggregate; excluded from destination model training'
-    })));
-  }
   await db.collection('sourceRegistry').bulkWrite([
-    { updateOne: { filter: { key: 'unesco' }, update: { $setOnInsert: { key: 'unesco', label: 'UNESCO World Heritage records for project destinations', sourceUrl: 'https://whc.unesco.org/en/statesparties/in', recordsAccepted: OFFICIAL_UNESCO_HERITAGE.length, status: 'bundled-official' } }, upsert: true } },
+    { updateOne: { filter: { key: 'unesco' }, update: { $setOnInsert: { key: 'unesco', label: 'UNESCO World Heritage data', sourceUrl: 'https://whc.unesco.org/en/list/', status: 'awaiting official import' } }, upsert: true } },
     { updateOne: { filter: { key: 'festivals' }, update: { $setOnInsert: { key: 'festivals', label: 'Festival dataset', sourceUrl: '', status: 'seeded-demo' } }, upsert: true } },
-    { updateOne: { filter: { key: 'tourismStatistics' }, update: { $setOnInsert: { key: 'tourismStatistics', label: 'Destination-level tourism observations', sourceUrl: '', status: 'awaiting official import' } }, upsert: true } },
-    { updateOne: { filter: { key: 'regionalTourismStatistics' }, update: { $setOnInsert: { key: 'regionalTourismStatistics', label: 'Ministry of Tourism state/UT visits, 2023–2024', sourceUrl: 'https://data.tourism.gov.in/mrd/Uploads/tourism_data/India%20Tourism%20Data%20Compendium%202025_1.pdf', recordsAccepted: OFFICIAL_REGIONAL_TOURISM_STATS.length, status: 'bundled-official' } }, upsert: true } },
+    { updateOne: { filter: { key: 'tourismStatistics' }, update: { $setOnInsert: { key: 'tourismStatistics', label: 'India tourism statistics', sourceUrl: 'https://www.data.gov.in/', status: 'awaiting official import' } }, upsert: true } },
     { updateOne: { filter: { key: 'behaviour' }, update: { $setOnInsert: { key: 'behaviour', label: 'Tourist behaviour logs', sourceUrl: '', status: 'demo-and-import' } }, upsert: true } }
   ]);
-  await db.collection('sourceRegistry').updateOne(
-    { key: 'unesco', status: 'awaiting official import' },
-    { $set: { label: 'UNESCO World Heritage records for project destinations', sourceUrl: 'https://whc.unesco.org/en/statesparties/in', recordsAccepted: OFFICIAL_UNESCO_HERITAGE.length, status: 'bundled-official' } }
-  );
   for (const [id, name, email, password, role] of accountSeeds) {
     await db.collection('users').updateOne({ id }, { $set: { id, name, email, passwordHash: await bcrypt.hash(password, 12), role, home: role === 'tourist' ? 'Bengaluru' : 'India', homeLocation: role === 'tourist' ? touristHome : null, budget: 9000, interests: role === 'tourist' ? SEED.users[0].interests : {}, history: role === 'tourist' ? SEED.users[0].history : [] } }, { upsert: true });
   }
